@@ -11,8 +11,8 @@ from pyspark.context import SparkContext
 from pyspark.sql.functions import udf, col, current_timestamp
 from pyspark.sql.types import StringType
 
-# Predefine logger as None so it exists in scope for the except block
 logger = None
+sns_topic_arn = None  # Predefine sns_topic_arn so it's in scope even if the try block fails early
 
 def send_sns_message(sns_topic_arn, message):
     sns = boto3.client("sns")
@@ -23,7 +23,6 @@ def send_sns_message(sns_topic_arn, message):
     )
 
 try:
-    # Obtain arguments, now including SNS_TOPIC_ARN
     args = getResolvedOptions(
         sys.argv,
         [
@@ -35,7 +34,7 @@ try:
     )
     source_s3_path = args['SOURCE_S3_PATH']
     target_s3_path = args['TARGET_S3_PATH']
-    sns_topic_arn = args['SNS_TOPIC_ARN']
+    sns_topic_arn  = args['SNS_TOPIC_ARN']
 
     sc = SparkContext()
     glueContext = GlueContext(sc)
@@ -100,7 +99,7 @@ except Exception as e:
     if logger:
         logger.error(error_message, exc_info=True)
 
-    # Attempt to send SNS message only if sns_topic_arn is present
+    # Attempt to send SNS message only if sns_topic_arn was assigned
     if sns_topic_arn:
         try:
             send_sns_message(sns_topic_arn, error_message)
