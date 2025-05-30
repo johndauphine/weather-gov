@@ -24,28 +24,28 @@ def send_sns_message(sns_topic_arn, message):
 
 try:
     # Obtain arguments, now including SNS_TOPIC_ARN
-    args = getResolvedOptions(sys.argv, [
-        'JOB_NAME',
-        'SOURCE_S3_PATH',
-        'TARGET_S3_PATH',
-        'SNS_TOPIC_ARN'
-    ])
+    args = getResolvedOptions(
+        sys.argv,
+        [
+            'JOB_NAME',
+            'SOURCE_S3_PATH',
+            'TARGET_S3_PATH',
+            'SNS_TOPIC_ARN'
+        ]
+    )
     source_s3_path = args['SOURCE_S3_PATH']
     target_s3_path = args['TARGET_S3_PATH']
     sns_topic_arn = args['SNS_TOPIC_ARN']
 
-    # AWS Glue setup
     sc = SparkContext()
     glueContext = GlueContext(sc)
     spark = glueContext.spark_session
 
-    # Now that GlueContext is defined, set up the logger
     logger = glueContext.get_logger()
     logger.info(f"Job started. Reading data from: {source_s3_path}")
     logger.info(f"Data will be written to: {target_s3_path}")
-    logger.info(f"SNS Topic ARN will be read from parameter: {sns_topic_arn}")
+    logger.info(f"SNS Topic ARN parameter: {sns_topic_arn}")
 
-    # Function to call Weather.gov API
     def fetch_weather_alerts(lat, lon):
         try:
             logger.info(f"Fetching weather alerts for lat={lat}, lon={lon}")
@@ -78,14 +78,12 @@ try:
             logger.error(f"Exception occurred while fetching weather alerts: {str(e)}", exc_info=True)
             return f"Exception: {str(e)}"
 
-    # Register UDF
     fetch_weather_alerts_udf = udf(fetch_weather_alerts, StringType())
 
     logger.info("Reading input CSV from S3...")
     df = spark.read.option("header", "true").option("inferSchema", "true").csv(source_s3_path)
     logger.info("Successfully read input CSV.")
 
-    # Enrich with weather alerts and timestamp
     logger.info("Enriching data with weather alerts...")
     df_with_alerts = df.withColumn("alerts", fetch_weather_alerts_udf(col("latitude"), col("longitude")))
     df_with_alerts = df_with_alerts.withColumn("queried_at", current_timestamp())
@@ -98,20 +96,20 @@ try:
     logger.info("Write completed successfully.")
 
 except Exception as e:
-    # Even if logger never got set in the try block, this block can still check
     error_message = f"Unhandled error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
     if logger:
         logger.error(error_message, exc_info=True)
-    else:
-        # Fallback if logger was never initialized (no print statements requested).
-        pass
 
-    # Attempt to send SNS message about the failure
-    try:
-        send_sns_message(sns_topic_arn, error_message)
-    except Exception as sns_ex:
+    # Attempt to send SNS message only if sns_topic_arn is present
+    if sns_topic_arn:
+        try:
+            send_sns_message(sns_topic_arn, error_message)
+        except Exception as sns_ex:
+            if logger:
+                logger.error(f"Failed to send SNS alert: {str(sns_ex)}", exc_info=True)
+    else:
         if logger:
-            logger.error(f"Failed to send SNS alert: {str(sns_ex)}", exc_info=True)
+            logger.warning("No SNS_TOPIC_ARN provided. Skipping SNS alert.")
 
     sys.exit(1)
 
