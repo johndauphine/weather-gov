@@ -11,6 +11,9 @@ from pyspark.context import SparkContext
 from pyspark.sql.functions import udf, col, current_timestamp
 from pyspark.sql.types import StringType
 
+# Predefine logger as None so it exists in scope for the except block
+logger = None
+
 def send_sns_message(sns_topic_arn, message):
     sns = boto3.client("sns")
     sns.publish(
@@ -36,6 +39,7 @@ try:
     glueContext = GlueContext(sc)
     spark = glueContext.spark_session
 
+    # Now that GlueContext is defined, set up the logger
     logger = glueContext.get_logger()
     logger.info(f"Job started. Reading data from: {source_s3_path}")
     logger.info(f"Data will be written to: {target_s3_path}")
@@ -94,14 +98,20 @@ try:
     logger.info("Write completed successfully.")
 
 except Exception as e:
+    # Even if logger never got set in the try block, this block can still check
     error_message = f"Unhandled error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-    logger.error(error_message, exc_info=True)
+    if logger:
+        logger.error(error_message, exc_info=True)
+    else:
+        # Fallback if logger was never initialized (no print statements requested).
+        pass
 
+    # Attempt to send SNS message about the failure
     try:
-        # Use the parameter to send the SNS message
         send_sns_message(sns_topic_arn, error_message)
     except Exception as sns_ex:
-        logger.error(f"Failed to send SNS alert: {str(sns_ex)}", exc_info=True)
+        if logger:
+            logger.error(f"Failed to send SNS alert: {str(sns_ex)}", exc_info=True)
 
     sys.exit(1)
 
