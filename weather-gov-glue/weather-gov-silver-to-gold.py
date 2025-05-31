@@ -1,5 +1,7 @@
+#!/usr/bin/env python3
 import sys
 import os
+import logging
 import traceback
 from datetime import date
 
@@ -11,14 +13,14 @@ from awsglue.context import GlueContext
 from awsglue.utils import getResolvedOptions
 from awsglue.job import Job
 
-def publish_failure(topic_arn: str | None, message: str) -> None:
-    """
-    Publish a failure message to the provided SNS topic ARN.
-    """
-    # We'll use the Glue logger, so we need a reference below. This function
-    # is called after the logger is defined, hence the global reference.
-    global logger
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("parquet_to_iceberg_job")
 
+def publish_failure(topic_arn: str | None, message: str) -> None:
     if not topic_arn:
         logger.warning("SNS_TOPIC_ARN not set – skipping SNS notification")
         return
@@ -33,7 +35,6 @@ def publish_failure(topic_arn: str | None, message: str) -> None:
         logger.error("SNS publish failed: %s", sns_err)
 
 try:
-    # Retrieve required parameters
     args = getResolvedOptions(
         sys.argv,
         [
@@ -46,7 +47,6 @@ try:
         ],
     )
 
-    # Attempt to get an SNS topic parameter
     sns_topic = (
         next(
             (p.split("=", 1)[1] for p in sys.argv if p.startswith("--SNS_TOPIC_ARN=")),
@@ -63,7 +63,6 @@ try:
 
     iceberg_id  = f"{catalog}.{db}.{table}"
 
-    # Create Spark session with Iceberg config
     spark = (
         SparkSession.builder
             .appName(args["JOB_NAME"])
@@ -75,15 +74,10 @@ try:
             .getOrCreate()
     )
 
-    # Create the GlueContext and Job
     glue_ctx = GlueContext(spark.sparkContext)
-    job = Job(glue_ctx)
+    job      = Job(glue_ctx)
     job.init(args["JOB_NAME"], args)
 
-    # Retrieve the AWS Glue logger
-    logger = glue_ctx.get_logger()
-
-    # Make sure database exists
     spark.sql(
         f"""
         CREATE DATABASE IF NOT EXISTS {db}
@@ -95,20 +89,17 @@ try:
     df = spark.read.parquet(src_parquet)
     logger.info("Source rows: %d", df.count())
 
-    # If the table has a 'queried_at' column, convert it to event_date; otherwise default to today.
     if "queried_at" in df.columns:
         df = df.withColumn("event_date", to_date(col("queried_at")))
     else:
         df = df.withColumn("event_date", lit(date.today()))
         logger.warning("queried_at missing – event_date defaulted to today")
 
-    # Create a unique record_id
     df = df.withColumn(
         "record_id",
         sha2(concat_ws("||", *[col(c).cast("string") for c in df.columns]), 256)
     )
 
-    # Check if the Iceberg table exists
     try:
         spark.read.table(iceberg_id)
         table_exists = True
@@ -117,7 +108,6 @@ try:
         table_exists = False
         logger.info("Iceberg table does not exist – first load")
 
-    # Create the table if needed
     if not table_exists:
         df.createOrReplaceTempView("stage_firstload")
         spark.sql(
@@ -133,14 +123,12 @@ try:
         job.commit()
         sys.exit(0)
 
-    # Latest known event_date in the existing table
     max_date = (
         spark.sql(f"SELECT max(event_date) AS maxd FROM {iceberg_id}")
              .collect()[0]["maxd"]
     )
     logger.info("High‑water‑mark event_date: %s", max_date)
 
-    # Split new vs. overlapping data
     df_new      = df.filter(col("event_date") > lit(max_date))
     df_overlap  = df.filter(col("event_date") <= lit(max_date))
 
@@ -175,7 +163,6 @@ try:
         inserted_new, inserted_overlap, total_inserted,
     )
 
-    # Commit the Glue job
     job.commit()
     logger.info("Glue job finished SUCCESSFULLY")
 
